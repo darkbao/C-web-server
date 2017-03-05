@@ -1,7 +1,7 @@
 ##C++多线程的 web 服务器
 
 + Linux native API
-+ proactor + Thread pool
++ 模拟proactor + Thread pool
 + 半同步/半反应堆模式 
 + epoll复用IO
 
