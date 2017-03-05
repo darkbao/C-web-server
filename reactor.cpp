@@ -9,48 +9,25 @@
 #include <stdlib.h>
 #include <cassert>
 #include <sys/epoll.h>
-
+#include "public_func.h"
 #include "locker.h"
 #include "threadpool.h"
 #include "http_business.h"
 
 #define MAX_FD 65536
 #define MAX_EVENT_NUMBER 30000
-#define POOL_THREAD_NUM 10
+#define POOL_THREAD_NUM 20
+
 using namespace mj;
-extern int addfd( int epollfd, int fd, bool one_shot );
-extern int removefd( int epollfd, int fd );
-
-void addsig( int sig, void( handler )(int), bool restart = true )
-{
-    struct sigaction sa;
-    memset( &sa, '\0', sizeof( sa ) );
-    sa.sa_handler = handler;
-    if( restart )
-    {
-        sa.sa_flags |= SA_RESTART;
-    }
-    sigfillset( &sa.sa_mask );
-    assert( sigaction( sig, &sa, NULL ) != -1 );
-}
-
-void show_error( int connfd, const char* info )
-{
-    printf( "%s", info );
-    send( connfd, info, strlen( info ), 0 );
-    close( connfd );
-}
-
 
 int main( int argc, char* argv[] )
 {
-    if( argc <= 2 )
+    if( argc <= 1 )
     {
-        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        printf( "usage: %s port_number\n", basename( argv[0] ) );
         return 1;
     }
-    const char* ip = argv[1];
-    int port = atoi( argv[2] );
+    int port = atoi( argv[1] );
 
     addsig( SIGPIPE, SIG_IGN );
 
@@ -77,7 +54,7 @@ int main( int argc, char* argv[] )
     struct sockaddr_in address;
     bzero( &address, sizeof( address ) );
     address.sin_family = AF_INET;
-    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons( port );
 
     ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
@@ -87,14 +64,14 @@ int main( int argc, char* argv[] )
     assert( ret >= 0 );
 
     epoll_event events[ MAX_EVENT_NUMBER ];
-    int epollfd = epoll_create( 5 );
-    assert( epollfd != -1 );
-    addfd( epollfd, listenfd, false );
-    http_business::mj_epollfd = epollfd;
+    int epollfd_main = epoll_create( 5 );
+    assert( epollfd_main != -1 );
+    addfd( epollfd_main, listenfd, false );
+    http_business::http_epollfd = epollfd_main;
 
     while( true )
     {
-        int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+        int number = epoll_wait( epollfd_main, events, MAX_EVENT_NUMBER, -1 );
         if ( ( number < 0 ) && ( errno != EINTR ) )
         {
             printf( "epoll failure\n" );
@@ -114,9 +91,9 @@ int main( int argc, char* argv[] )
                     printf( "errno is: %d\n", errno );
                     continue;
                 }
-                if( http_business::mj_user_count >= MAX_FD )
+                if( http_business::http_user_count >= MAX_FD )
                 {
-                    show_error( connfd, "Internal server busy" );
+                    send_error( connfd, "Internal server busy" );
                     continue;
                 }
                 
@@ -149,7 +126,7 @@ int main( int argc, char* argv[] )
         }
     }
 
-    close( epollfd );
+    close( epollfd_main );
     close( listenfd );
     delete [] users;
     delete pool;

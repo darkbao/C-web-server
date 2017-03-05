@@ -11,35 +11,36 @@ namespace mj{
 	class threadpool
 	{
 	public:
-		threadpool( int thread_number = 8, int max_requests = 10000 );
+		threadpool( int thread_num, int max_reqs);
 		~threadpool();
 		bool append( T* request );
 
 	private:
 		static void* worker( void* arg );
-		void run();
+		void thread_run();
 
 	private:
-		int mj_thread_number;
-		int mj_max_requests;
-		pthread_t* mj_threads;
-		std::list< T* > mj_workqueue;
-		locker mj_queuelocker;
-		sem mj_queuestat;
-		bool mj_stop;
+		int thread_number;
+		int max_requests;
+		pthread_t* all_threads;
+		std::list< T* > business_queue;
+		locker business_queue_locker;
+		sem queue_sem;
+		bool stop_all_threads;
 	};
 
 	template< typename T >
-	threadpool< T >::threadpool( int thread_number, int max_requests ) : 
-		    mj_thread_number( thread_number ), mj_max_requests( max_requests ), mj_stop( false ), mj_threads( NULL )
+	threadpool< T >::threadpool( int thread_num, int max_req ) : 
+		    thread_number( thread_num ), max_requests( max_req ), 
+		    stop_all_threads( false ), all_threads( NULL )
 	{
 		if( ( thread_number <= 0 ) || ( max_requests <= 0 ) )
 		{
 		    throw std::exception();
 		}
 
-		mj_threads = new pthread_t[ mj_thread_number ];
-		if( ! mj_threads )
+		all_threads = new pthread_t[ thread_number ];
+		if( ! all_threads )
 		{
 		    throw std::exception();
 		}
@@ -47,14 +48,14 @@ namespace mj{
 		for ( int i = 0; i < thread_number; ++i )
 		{
 		    printf( "create the %dth thread\n", i );
-		    if( pthread_create( mj_threads + i, NULL, worker, this ) != 0 )
+		    if( pthread_create( all_threads + i, NULL, worker, this ) != 0 )
 		    {
-		        delete [] mj_threads;
+		        delete [] all_threads;
 		        throw std::exception();
 		    }
-		    if( pthread_detach( mj_threads[i] ) )
+		    if( pthread_detach( all_threads[i] ) )
 		    {
-		        delete [] mj_threads;
+		        delete [] all_threads;
 		        throw std::exception();
 		    }
 		}
@@ -63,22 +64,22 @@ namespace mj{
 	template< typename T >
 	threadpool< T >::~threadpool()
 	{
-		delete [] mj_threads;
-		mj_stop = true;
+		delete [] all_threads;
+		stop_all_threads = true;
 	}
 
 	template< typename T >
 	bool threadpool< T >::append( T* request )
 	{
-		mj_queuelocker.lock();
-		if ( mj_workqueue.size() > mj_max_requests )
+		business_queue_locker.lock();
+		if ( business_queue.size() > max_requests )
 		{
-		    mj_queuelocker.unlock();
+		    business_queue_locker.unlock();
 		    return false;
 		}
-		mj_workqueue.push_back( request );
-		mj_queuelocker.unlock();
-		mj_queuestat.post();
+		business_queue.push_back( request );
+		business_queue_locker.unlock();
+		queue_sem.post();
 		return true;
 	}
 
@@ -86,25 +87,25 @@ namespace mj{
 	void* threadpool< T >::worker( void* arg )
 	{
 		threadpool* pool = ( threadpool* )arg;
-		pool->run();
+		pool->thread_run();
 		return pool;
 	}
 
 	template< typename T >
-	void threadpool< T >::run()
+	void threadpool< T >::thread_run()
 	{
-		while ( ! mj_stop )
+		while ( ! stop_all_threads )
 		{
-		    mj_queuestat.wait();
-		    mj_queuelocker.lock();
-		    if ( mj_workqueue.empty() )
+		    queue_sem.wait();
+		    business_queue_locker.lock();
+		    if ( business_queue.empty() )
 		    {
-		        mj_queuelocker.unlock();
+		        business_queue_locker.unlock();
 		        continue;
 		    }
-		    T* request = mj_workqueue.front();
-		    mj_workqueue.pop_front();
-		    mj_queuelocker.unlock();
+		    T* request = business_queue.front();
+		    business_queue.pop_front();
+		    business_queue_locker.unlock();
 		    if ( ! request )
 		    {
 		        continue;
