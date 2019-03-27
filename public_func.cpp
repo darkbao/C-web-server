@@ -11,6 +11,8 @@
 #include <sys/epoll.h>
 #include <signal.h>
 
+namespace mj
+{
 
 int setnonblocking(int fd)
 {
@@ -26,8 +28,7 @@ void addfd(int epollfd, int fd, bool one_shot)
 	epoll_event event;
 	event.data.fd = fd;
 	event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-	if (one_shot)
-	{
+	if (one_shot) {
 		event.events |= EPOLLONESHOT;
 	}
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
@@ -39,7 +40,6 @@ void removefd(int epollfd, int fd)
 	epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
 	close(fd);
 }
-
 
 void modfd(int epollfd, int fd, int ev)
 {
@@ -54,8 +54,7 @@ void addsig(int sig, void(handler)(int), bool restart = true)
 	struct sigaction sa;
 	memset(&sa, '\0', sizeof(sa));
 	sa.sa_handler = handler;
-	if (restart)
-	{
+	if (restart) {
 		sa.sa_flags |= SA_RESTART;
 	}
 	sigfillset(&sa.sa_mask);
@@ -67,4 +66,6 @@ void send_error(int connfd, const char* info)
 	printf("%s", info);
 	send(connfd, info, strlen(info), 0);
 	close(connfd);
+}
+
 }
