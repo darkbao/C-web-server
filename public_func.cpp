@@ -23,29 +23,30 @@ int setnonblocking(int fd)
 }
 
 
-void addfd(int epollfd, int fd, bool one_shot)
+void addfd(int epollfd, int fd)
 {
 	epoll_event event;
 	event.data.fd = fd;
-	event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-	if (one_shot) {
-		event.events |= EPOLLONESHOT;
-	}
+	event.events  = EPOLLIN | EPOLLET | EPOLLRDHUP;
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
 	setnonblocking(fd);
 }
 
-void removefd(int epollfd, int fd)
+void removefd(int epollfd, int fd, bool half_close)
 {
 	epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
-	close(fd);
+	if (half_close) {
+		shutdown(fd, SHUT_RDWR);
+	} else {
+		close(fd);
+	}
 }
 
 void modfd(int epollfd, int fd, int ev)
 {
 	epoll_event event;
 	event.data.fd = fd;
-	event.events = ev | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+	event.events  = ev | EPOLLET | EPOLLRDHUP;
 	epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 

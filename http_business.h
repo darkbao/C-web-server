@@ -35,18 +35,17 @@ public:
 	enum LINE_STATUS { LINE_OK, LINE_BAD, LINE_UNFINISHED };
 
 public:
-	http_business(){}
-	~http_business(){}
+	http_business() { }
+	~http_business() { }
 
-public:
 	void init(int sockfd, const sockaddr_in& addr);
-	void close_conn(bool real_close = true);
-	void process();
+	void reset();
 	bool read();
 	bool write();
+	int  process();
+	inline bool isKeepAlive() const { return http_keep_alive; };
 
 private:
-	void init();
 	HTTP_CODE process_read();
 	bool process_write(HTTP_CODE ret);
 
@@ -65,9 +64,6 @@ private:
 	bool add_linger();
 	bool add_blank_line();
 	inline char* get_line() { return http_read_buf + http_start_line; }
-public:
-	static int http_epollfd;
-	static int http_user_count;
 
 private:
 	int 	 	http_sockfd;

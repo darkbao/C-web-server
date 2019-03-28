@@ -3,7 +3,6 @@
 	parse http request and send back a .html file
 */
 #include "http_business.h"
-#include "public_func.h"
 
 namespace mj
 {
@@ -19,31 +18,14 @@ const char* error_500_title = "Internal Error";
 const char* error_500_form  = "There was an unusual problem serving the requested file.\n";
 const char* doc_root 		= "/var/www/html";
 
-
-int http_business::http_user_count = 0;
-int http_business::http_epollfd = -1;
-
-void http_business::close_conn(bool real_close)
-{
-	if (real_close && (http_sockfd != -1)) {
-	    removefd(http_epollfd, http_sockfd);
-	    http_sockfd = -1;
-	    http_user_count--;
-	}
-}
-
 void http_business::init(int sockfd, const sockaddr_in& addr)
 {
-	http_sockfd = sockfd;
+	http_sockfd  = sockfd;
 	http_address = addr;
-	
-	addfd(http_epollfd, sockfd, true);
-	http_user_count++;
-
-	init();
+	reset();
 }
 
-void http_business::init()
+void http_business::reset()
 {
 	http_check_state = CHECK_STATE_REQUESTLINE;
 	http_keep_alive  = false;
@@ -92,25 +74,41 @@ http_business::LINE_STATUS http_business::parse_line()
 
 bool http_business::read()
 {
-	if (http_read_idx >= READ_BUFFER_SIZE) {
-		printf("[error] read failed, read_buffer overflow\n");
-	    return false;
-	}
-	int bytes_read = recv(http_sockfd, http_read_buf + http_read_idx, READ_BUFFER_SIZE - http_read_idx, 0);
-    if (bytes_read == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+	while (1) {
+		int bytes_read = recv(http_sockfd, http_read_buf, READ_BUFFER_SIZE, 0);
+		if (bytes_read <= -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				return true;
+			} else {
+				return false;
+			}
+		} else if (bytes_read == 0) {
+			return false;
+		} else if (bytes_read == READ_BUFFER_SIZE) {
+			continue;
+		} else {
 			return true;
-        } else {
-        	printf("[error] read failed, errno[%d]\n", errno);
-        	return false;
-        }
-    } else if (bytes_read == 0) {
-    	printf("[error] read failed, bytes_read == 0\n");
-        return false;
-    } else {
-    	http_read_idx += bytes_read;
-    	return true;
-    }
+		}
+	}
+	// if (http_read_idx >= READ_BUFFER_SIZE) {
+	// 	printf("[error] read failed, read_buffer overflow\n");
+	//     return false;
+	// }
+	// int bytes_read = recv(http_sockfd, http_read_buf+http_read_idx, READ_BUFFER_SIZE-http_read_idx, 0);
+ //    if (bytes_read == -1) {
+ //        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+	// 		return true;
+ //        } else {
+ //        	printf("[error] read failed, errno[%d]\n", errno);
+ //        	return false;
+ //        }
+ //    } else if (bytes_read == 0) {
+ //    	printf("[error] read failed, bytes_read == 0\n");
+ //        return false;
+ //    } else {
+ //    	http_read_idx += bytes_read;
+ //    	return true;
+ //    }
 }
 
 http_business::HTTP_CODE http_business::parse_request_line(char* text)
@@ -175,7 +173,9 @@ http_business::HTTP_CODE http_business::parse_headers(char* text)
 	    text += 11;
 	    text += strspn(text, " \t");
 	    if (strcasecmp(text, "keep-alive") == 0) {
-	        http_keep_alive = true;
+	        http_keep_alive = false;
+	    } else {
+	    	http_keep_alive = true;
 	    }
 	}
 	else if (strncasecmp(text, "Content-Length:", 15) == 0)
@@ -284,41 +284,50 @@ void http_business::unmap()
 
 bool http_business::write()
 {
-	if (http_write_idx == 0) {
-	    init();
-	    modfd(http_epollfd, http_sockfd, EPOLLIN);
-	    return true;
-	}
-	int temp = writev(http_sockfd, http_iv, http_iv_count);
-	if (temp <= -1) {
-	    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-	        modfd(http_epollfd, http_sockfd, EPOLLOUT);
-	        return true;
-	    } else {
-	    	printf("[error] writev failed, errno[%d]\n", errno);
-	    	unmap();
-	    	return false;
-	    }
-	} else if (temp == 0) {
-	    printf("[error] writev failed, write_ret == 0\n");
-		unmap();
-	    return false;
-	} else {
-		//printf("sockfd[%d], write [%d] bytes\n", http_sockfd, temp);
-		unmap();
-		modfd(http_epollfd, http_sockfd, EPOLLIN);
-		if (http_keep_alive) {
-			init();
-		} else {
-			//printf("not keep-alive, close sockfd[%d]\n", http_sockfd);
-			// epoll_ctl(http_epollfd, EPOLL_CTL_DEL, http_sockfd, 0);
-			// shutdown(http_sockfd, SHUT_RDWR);
-			// http_sockfd = -1;
-	  		// http_user_count--;
-			removefd(http_epollfd, http_sockfd);
-		}
-		return true;
-	}
+	const char* page =  "HTTP/1.1 200 OK\r\n"
+						"Content-Length: 110\r\n"
+						"Connection: close\r\n"
+						"\r\n"
+						"<html>\r\n"
+						"\r\n"
+						"<head>\r\n"
+						"<title>Welcome</title>\r\n"
+						"</head>\r\n"
+						"\r\n"
+						"<body>\r\n"
+						"<p>An useless html page</p>\r\n"
+						"</body>\r\n"
+						"\r\n"
+						"</html>\r\n";
+	const size_t len = strlen(page);
+	int send_byte = send(http_sockfd, page, len, 0);
+	printf("send_byte [%d], page len[%lu]\n", send_byte, len);
+	return true;
+	// if (http_write_idx == 0) {
+	//     return true;
+	// }
+	// int temp = writev(http_sockfd, http_iv, http_iv_count);
+	// if (temp <= -1) {
+	//     if (errno == EAGAIN || errno == EWOULDBLOCK) {
+	//         return true;
+	//     } else {
+	//     	printf("[error] writev failed, errno[%d]\n", errno);
+	//     	unmap();
+	//     	return false;
+	//     }
+	// } else if (temp == 0) {
+	//     printf("[error] writev failed, write_ret == 0\n");
+	// 	unmap();
+	//     return false;
+	// } else {
+	// 	printf("sockfd[%d], send [%d] bytes:\n", http_sockfd, temp);
+	// 	for (int i = 0; i < http_iv_count; ++i) {
+	// 		printf("%s", (char*)http_iv[i].iov_base);
+	// 	}
+	// 	printf("\n");
+	// 	unmap();
+	// 	return true;
+	// }
 }
 
 bool http_business::add_response(const char* format, ...)
@@ -440,18 +449,17 @@ bool http_business::process_write(HTTP_CODE ret)
 	return true;
 }
 
-void http_business::process()
+int http_business::process()
 {
-	HTTP_CODE read_ret = process_read();
-	if (read_ret == INCOMPLETE_REQUEST) {
-	    modfd(http_epollfd, http_sockfd, EPOLLIN);
-	    return;
-	}
-	bool write_ret = process_write(read_ret);
-	if (!write_ret) {
-	    close_conn();
-	}
-	modfd(http_epollfd, http_sockfd, EPOLLOUT);
+	// HTTP_CODE read_ret = process_read();
+	// if (read_ret == INCOMPLETE_REQUEST) {
+	//     return 1;
+	// }
+	// bool write_ret = process_write(read_ret);
+	// if (!write_ret) {
+	//     return -1;
+	// }
+	return 0;
 }
 
 }

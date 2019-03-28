@@ -3,8 +3,8 @@
 
 namespace mj
 {
-    int  addfd(int epollfd, int fd, bool one_shot);
-    int  removefd(int epollfd, int fd);
+    int  addfd(int epollfd, int fd);
+    int  removefd(int epollfd, int fd, bool half_close = false);
     int  setnonblocking(int fd);
     void modfd(int epollfd, int fd, int ev);
     void addsig(int sig, void(handler)(int), bool restart = true);
