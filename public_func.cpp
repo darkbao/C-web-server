@@ -3,43 +3,40 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <errno.h>
 #include <string.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <cassert>
 #include <sys/epoll.h>
 #include <signal.h>
+#include "public_func.h"
 
 namespace mj
 {
 
-int setnonblocking(int fd)
+void setNonBlock(int fd)
 {
 	int old_option = fcntl(fd, F_GETFL);
-	int new_option = old_option | O_NONBLOCK;
-	fcntl(fd, F_SETFL, new_option);
-	return old_option;
+    exit_if(old_option < 0, "fcntl failed");
+	int ret = fcntl(fd, F_SETFL, old_option | O_NONBLOCK);
+    exit_if(ret < 0, "fcntl failed");
 }
 
 
-void addfd(int epollfd, int fd)
+void updateEvents(int epollfd, int fd, int ev, int op)
 {
 	epoll_event event;
-	event.data.fd = fd;
-	event.events  = EPOLLIN | EPOLLET | EPOLLRDHUP;
-	epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
-	setnonblocking(fd);
+    memset(&event, 0, sizeof(event));
+    event.events = ev;
+    event.data.fd = fd;
+    int r = epoll_ctl(epollfd, op, fd, &event);
+    exit_if(r, "epoll_ctl failed");
 }
 
-void removefd(int epollfd, int fd, bool half_close)
+void removeAndClose(int epollfd, int fd)
 {
 	epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
-	if (half_close) {
-		shutdown(fd, SHUT_RDWR);
-	} else {
-		close(fd);
-	}
+	close(fd);
 }
 
 void modfd(int epollfd, int fd, int ev)
@@ -50,7 +47,7 @@ void modfd(int epollfd, int fd, int ev)
 	epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 
-void addsig(int sig, void(handler)(int), bool restart = true)
+void addsig(int sig, void(handler)(int), bool restart)
 {
 	struct sigaction sa;
 	memset(&sa, '\0', sizeof(sa));

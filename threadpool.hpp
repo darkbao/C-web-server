@@ -27,10 +27,7 @@ template<typename T>
 class threadpool
 {
 public:
-	threadpool(unsigned thread_num, int port)
-		   	 : m_thread_num(thread_num),
-	 		   m_threads(NULL),
-	 		   m_port(port)
+	threadpool(unsigned thread_num, int port) : m_thread_num(thread_num), m_threads(NULL), m_port(port)
 	{
 		if ((thread_num <= 0) || (port <= 0)) {
 		    throw std::exception();
@@ -74,14 +71,12 @@ private:
 	{
 	    int listenfd = socket(PF_INET, SOCK_STREAM, 0);
 	    assert(listenfd >= 0);
-	    
-	    struct linger tmp = { 1, 0 };
-	    setsockopt(listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
+	   
 	    int opt_on = 1;
 	    setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, &opt_on, sizeof(opt_on));
 	    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt_on, sizeof(opt_on));
 
-	    struct sockaddr_in address;
+	   	struct sockaddr_in address;
 	    bzero(&address, sizeof(address));
 		address.sin_family      = AF_INET;
 		address.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -89,34 +84,29 @@ private:
 
 	    int ret = bind(listenfd, (struct sockaddr*)&address, sizeof(address));
 	    assert(ret == 0);
-
 	    ret = listen(listenfd, 5);
 	    assert(ret == 0);
+	    setNonBlock(listenfd);
 
 	    int epollfd = epoll_create(5);
-	    assert(epollfd != -1);
-	    addfd(epollfd, listenfd);
+	    assert(epollfd >= 0);
+	    updateEvents(epollfd, listenfd, EPOLLIN, EPOLL_CTL_ADD);
 
-		T* user_vec = new T[MAX_FD];
-		epoll_event event_vec[MAX_EVENT_NUMBER];
-		unsigned int user_num = 0;
-	    printf("thread[%lu] loop begin, epollfd[%d], listenfd[%d]\n", pthread_self(), epollfd, listenfd);
+	    eventLoop(epollfd, listenfd, 10000);
+	    removeAndClose(epollfd, listenfd);
+	    close(epollfd);
+	}
 
+	void eventLoop(int epollfd, int listenfd, int waitMs)
+	{
+		T* user = new T[MAX_FD];
+		epoll_event activeEvent[MAX_EVENT_NUMBER];
+	    printf("eventLoop begin, epollfd[%d], listenfd[%d], threadID[%lu]\n", epollfd, listenfd, pthread_self());
 	    while (true) {
-	        int number = epoll_wait(epollfd, event_vec, MAX_EVENT_NUMBER, -1);
-	        if (number <= 0) {
-	            printf("[error] epoll_wait failure, errno[%d]\n", errno);
-	            if (errno == EINTR) {
-	            	continue;
-	            } else {
-	            	exit(-1);
-	            }
-	        } else {
-	        	printf("thread[%lu], epoll_wait return, number[%d]\n", pthread_self(), number);
-	        }
-
+	        int number = epoll_wait(epollfd, activeEvent, MAX_EVENT_NUMBER, waitMs);
 	        for (int i = 0; i < number; i++) {
-	            int sockfd = event_vec[i].data.fd;
+	            int sockfd = activeEvent[i].data.fd;
+        		int events = activeEvent[i].events;
 	            if (sockfd == listenfd) {
 	                struct sockaddr_in client_address;
 	                socklen_t client_addrlength = sizeof(client_address);
@@ -125,60 +115,23 @@ private:
 	                    printf("[error] accept failed, errno is: %d\n", errno);
 	                    continue;
 	                }
-	                if (++user_num >= MAX_FD) {
-	                    send_error(connfd, "internal server busy\n");
-	                    continue;
-	                }
-	                user_vec[connfd].init(connfd, client_address);
-					addfd(epollfd, connfd);
-	                printf("thread[%lu] accept sockfd[%d]\n", pthread_self(), connfd);
-	            } else if(event_vec[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-	                removefd(epollfd, sockfd);
-	                --user_num;
-	                printf("peer close sockfd[%d]\n", sockfd);
-	            } else if(event_vec[i].events & EPOLLIN) {
-	                if (user_vec[sockfd].read()) {
-	                   	int ret = user_vec[sockfd].process();
-	                   	if (ret == 1) {
-	                    	printf("incomplete_request, sockfd[%d]\n", sockfd);
-	                   	} else if (ret == -1) {
-	                   		printf("sockfd[%d] process write failed, close it\n", sockfd);
-	                   		removefd(epollfd, sockfd);
-	                		--user_num;
-	                   	} else {
-	                   		printf("sockfd[%d] read and process succeed\n", sockfd);
-							modfd(epollfd, sockfd, EPOLLOUT);
-	                   	}
-	                } else {
-	                	removefd(epollfd, sockfd);
-	                	--user_num;
-	                    printf("[error] sockfd[%d] read failed, close it\n", sockfd);
-	                }
-	            } else if(event_vec[i].events & EPOLLOUT) {
-	                if (user_vec[sockfd].write() == false) {
-	                	removefd(epollfd, sockfd);
-	                	--user_num;
-	                    printf("[error] sockfd[%d] write failed, close it\n", sockfd);
-	                }
-	                if (user_vec[sockfd].isKeepAlive()) {
-	                	user_vec[sockfd].reset();
-						modfd(epollfd, sockfd, EPOLLIN);
-	                	printf("write done, keep-alive, sockfd[%d]\n", sockfd);
-	                } else {
-	                	removefd(epollfd, sockfd, true);
-	                	--user_num;
-	                	printf("write done, close sockfd[%d]\n", sockfd);
-	                }
+	                user[connfd].init(connfd, epollfd, client_address);
+					setNonBlock(connfd);
+    				updateEvents(epollfd, connfd, EPOLLIN | EPOLLOUT | EPOLLET, EPOLL_CTL_ADD);
+	                printf("accept sockfd[%d]\n", connfd);
+	            } else if(events & EPOLLIN) {
+	                user[sockfd].read();
+	                user[sockfd].process();
+	            } else if(events & EPOLLOUT) {
+	                user[sockfd].write();
 	            } else {
 					printf("[error] unknown event type\n");
+					exit(-1);
 	            }
 	        }
 	    }
-	    close(listenfd);
-	    close(epollfd);
-	    delete[] user_vec;
+	    delete[] user;
 	}
-
 private:
 	unsigned int		m_thread_num;
 	pthread_t* 			m_threads;

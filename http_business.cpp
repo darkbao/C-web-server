@@ -2,7 +2,9 @@
 	http_business.cpp
 	parse http request and send back a .html file
 */
+#include <algorithm>
 #include "http_business.h"
+#include "public_func.h"
 
 namespace mj
 {
@@ -18,9 +20,10 @@ const char* error_500_title = "Internal Error";
 const char* error_500_form  = "There was an unusual problem serving the requested file.\n";
 const char* doc_root 		= "/var/www/html";
 
-void http_business::init(int sockfd, const sockaddr_in& addr)
+void http_business::init(int sockfd, int epollfd, const sockaddr_in& addr)
 {
 	http_sockfd  = sockfd;
+	m_epollfd    = epollfd;
 	http_address = addr;
 	reset();
 }
@@ -28,7 +31,7 @@ void http_business::init(int sockfd, const sockaddr_in& addr)
 void http_business::reset()
 {
 	http_check_state = CHECK_STATE_REQUESTLINE;
-	http_keep_alive  = false;
+	http_keep_alive  = true;
 
 	http_method         = GET;
 	http_url            = 0;
@@ -39,9 +42,15 @@ void http_business::reset()
 	http_checked_idx    = 0;
 	http_read_idx       = 0;
 	http_write_idx      = 0;
+	m_readBegin 		= 0;
+	m_readEnd 		 	= 0;
+	m_writeBegin 		= 0;
+	m_writeEnd 			= 0;
 	memset(http_read_buf,  '\0', READ_BUFFER_SIZE);
 	memset(http_write_buf, '\0', WRITE_BUFFER_SIZE);
 	memset(http_real_file, '\0', FILENAME_LEN);
+	//std::fill(m_readBuffer.begin(), m_readBuffer.end(), '\0');
+	//std::fill(m_writeBuffer.begin(), m_writeBuffer.end(), '\0');
 }
 
 http_business::LINE_STATUS http_business::parse_line()
@@ -72,44 +81,6 @@ http_business::LINE_STATUS http_business::parse_line()
 	return LINE_UNFINISHED;
 }
 
-bool http_business::read()
-{
-	while (1) {
-		int bytes_read = recv(http_sockfd, http_read_buf, READ_BUFFER_SIZE, 0);
-		if (bytes_read <= -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				return true;
-			} else {
-				return false;
-			}
-		} else if (bytes_read == 0) {
-			return false;
-		} else if (bytes_read == READ_BUFFER_SIZE) {
-			continue;
-		} else {
-			return true;
-		}
-	}
-	// if (http_read_idx >= READ_BUFFER_SIZE) {
-	// 	printf("[error] read failed, read_buffer overflow\n");
-	//     return false;
-	// }
-	// int bytes_read = recv(http_sockfd, http_read_buf+http_read_idx, READ_BUFFER_SIZE-http_read_idx, 0);
- //    if (bytes_read == -1) {
- //        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-	// 		return true;
- //        } else {
- //        	printf("[error] read failed, errno[%d]\n", errno);
- //        	return false;
- //        }
- //    } else if (bytes_read == 0) {
- //    	printf("[error] read failed, bytes_read == 0\n");
- //        return false;
- //    } else {
- //    	http_read_idx += bytes_read;
- //    	return true;
- //    }
-}
 
 http_business::HTTP_CODE http_business::parse_request_line(char* text)
 {
@@ -282,54 +253,6 @@ void http_business::unmap()
 	}
 }
 
-bool http_business::write()
-{
-	const char* page =  "HTTP/1.1 200 OK\r\n"
-						"Content-Length: 110\r\n"
-						"Connection: close\r\n"
-						"\r\n"
-						"<html>\r\n"
-						"\r\n"
-						"<head>\r\n"
-						"<title>Welcome</title>\r\n"
-						"</head>\r\n"
-						"\r\n"
-						"<body>\r\n"
-						"<p>An useless html page</p>\r\n"
-						"</body>\r\n"
-						"\r\n"
-						"</html>\r\n";
-	const size_t len = strlen(page);
-	int send_byte = send(http_sockfd, page, len, 0);
-	printf("send_byte [%d], page len[%lu]\n", send_byte, len);
-	return true;
-	// if (http_write_idx == 0) {
-	//     return true;
-	// }
-	// int temp = writev(http_sockfd, http_iv, http_iv_count);
-	// if (temp <= -1) {
-	//     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-	//         return true;
-	//     } else {
-	//     	printf("[error] writev failed, errno[%d]\n", errno);
-	//     	unmap();
-	//     	return false;
-	//     }
-	// } else if (temp == 0) {
-	//     printf("[error] writev failed, write_ret == 0\n");
-	// 	unmap();
-	//     return false;
-	// } else {
-	// 	printf("sockfd[%d], send [%d] bytes:\n", http_sockfd, temp);
-	// 	for (int i = 0; i < http_iv_count; ++i) {
-	// 		printf("%s", (char*)http_iv[i].iov_base);
-	// 	}
-	// 	printf("\n");
-	// 	unmap();
-	// 	return true;
-	// }
-}
-
 bool http_business::add_response(const char* format, ...)
 {
 	if (http_write_idx >= WRITE_BUFFER_SIZE) {
@@ -449,17 +372,130 @@ bool http_business::process_write(HTTP_CODE ret)
 	return true;
 }
 
-int http_business::process()
+void http_business::read()
 {
-	// HTTP_CODE read_ret = process_read();
-	// if (read_ret == INCOMPLETE_REQUEST) {
-	//     return 1;
-	// }
-	// bool write_ret = process_write(read_ret);
-	// if (!write_ret) {
-	//     return -1;
-	// }
-	return 0;
+	const int BUF_SIZE = 4096;
+	char tmpBuf[BUF_SIZE] = {'\0'};
+	while (1) {
+		int bytes_read = recv(http_sockfd, tmpBuf, BUF_SIZE, 0);
+		if (bytes_read <= -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				printf("read until EWOULDBLOCK\n");
+				return;
+			} else if (errno == EINTR) {
+				printf("recv interrupt\n");
+				continue;
+			} else {
+				printf("recv return[%d], errno[%d]\n", bytes_read, errno);
+				return;
+			}
+		} else if (bytes_read == 0) {
+			printf("recv return[0], peer close connection\n");
+			removeAndClose(m_epollfd, http_sockfd);
+			return;
+		} else {
+			int remain = m_readBuffer.size() - m_readEnd;
+			if (remain >= bytes_read) {
+				std::copy(tmpBuf, tmpBuf + bytes_read, m_readBuffer.begin() + m_readEnd);
+			} else {
+				auto iter = std::copy(tmpBuf, tmpBuf + remain, m_readBuffer.begin() + m_readEnd);
+				m_readBuffer.insert(iter, tmpBuf + remain, tmpBuf + bytes_read);
+			}
+			m_readEnd += bytes_read;
+			if (bytes_read == BUF_SIZE) {
+				printf("too many data, read again\n");
+				continue;
+			} else {
+				printf("recv[%d] bytes data\n", bytes_read);
+				return;
+			}
+		}
+	}
+}
+
+void http_business::process()
+{
+	const char* endSymbol = "\r\n\r\n";
+	std::vector<char>::iterator iter = m_readBuffer.begin();
+	while (1) {
+		iter = std::search(m_readBuffer.begin()+m_readBegin, m_readBuffer.begin()+m_readEnd, endSymbol, endSymbol+4);
+		if (iter == m_readBuffer.begin() + m_readEnd) {
+			break;
+		}
+		m_readBegin = iter - m_readBuffer.begin() + 4;
+		fillWriteBuffer();
+	}
+	if (m_readBegin == m_readEnd) {
+		m_readEnd = m_readBegin = 0;
+		printf("all data processed, reset read buffer index\n");
+	}
+	write();
+}
+
+void http_business::write()
+{
+	if (m_writeEnd == m_writeBegin) {
+		printf("no data to send\n");
+		return;
+	}
+	while (1) {
+		int bytes_send = send(http_sockfd, &m_writeBuffer[m_writeBegin], m_writeEnd - m_writeBegin, 0);
+		if (bytes_send <= -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			    printf("send until EWOULDBLOCK\n");
+			    return;
+			} else if (errno == EINTR) {
+				printf("send interrupt\n");
+				continue;
+			} else{
+				printf("send return[%d], errno[%d]\n", bytes_send, errno);;
+				return;
+			}
+		} else if (bytes_send == 0) {
+			printf("send return[0], peer close connection\n");
+			removeAndClose(m_epollfd, http_sockfd);
+			return;
+		} else {
+			printf("send[%d] bytes data\n", bytes_send);
+			m_writeBegin += bytes_send;
+			if (m_writeBegin == m_writeEnd) {
+				printf("all data in buffer send, reset writeIndex\n");
+				m_writeBegin = m_writeEnd = 0;
+				return;
+			} else {
+				printf("remain[%u] bytes data in buffer, try again\n", m_writeEnd - m_writeBegin);
+				continue;
+			}
+		}
+	}
+}
+
+void http_business::fillWriteBuffer()
+{
+	const char* page = "HTTP/1.1 200 OK\r\n"
+					   "Content-Length: 110\r\n"
+					   "Connection: close\r\n"
+					   "\r\n"
+					   "<html>\r\n"
+					   "\r\n"
+					   "<head>\r\n"
+					   "<title>Welcome</title>\r\n"
+					   "</head>\r\n"
+					   "\r\n"
+					   "<body>\r\n"
+					   "<p>An useless html page</p>\r\n"
+					   "</body>\r\n"
+					   "\r\n"
+					   "</html>\r\n";
+	const size_t pageLen = strlen(page);
+	size_t remain = m_writeBuffer.size() - m_writeEnd;
+	if (remain >= pageLen) {
+		std::copy(page, page + pageLen, m_writeBuffer.begin() + m_writeEnd);
+	} else {
+		auto iter = std::copy(page, page + remain, m_writeBuffer.begin() + m_writeEnd);
+		m_writeBuffer.insert(iter, page + remain, page + pageLen);
+	}
+	m_writeEnd += pageLen;
 }
 
 }

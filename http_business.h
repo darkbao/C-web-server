@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <vector>
 
 namespace mj
 {
@@ -35,14 +36,14 @@ public:
 	enum LINE_STATUS { LINE_OK, LINE_BAD, LINE_UNFINISHED };
 
 public:
-	http_business() { }
+	http_business() : m_readBuffer(READ_BUFFER_SIZE, '\0'), m_writeBuffer(WRITE_BUFFER_SIZE, '\0') { }
 	~http_business() { }
 
-	void init(int sockfd, const sockaddr_in& addr);
+	void init(int sockfd, int epollfd, const sockaddr_in& addr);
 	void reset();
-	bool read();
-	bool write();
-	int  process();
+	void read();
+	void write();
+	void process();
 	inline bool isKeepAlive() const { return http_keep_alive; };
 
 private:
@@ -64,9 +65,11 @@ private:
 	bool add_linger();
 	bool add_blank_line();
 	inline char* get_line() { return http_read_buf + http_start_line; }
+	void fillWriteBuffer();
 
 private:
 	int 	 	http_sockfd;
+	int 		m_epollfd;
 	sockaddr_in http_address;
 
 	char http_read_buf[READ_BUFFER_SIZE];
@@ -90,6 +93,14 @@ private:
 	struct stat  http_file_stat;
 	struct iovec http_iv[2];
 	int          http_iv_count;
+
+	std::vector<char> m_readBuffer;
+	unsigned int m_readBegin;
+	unsigned int m_readEnd;
+	std::vector<char> m_writeBuffer;
+	unsigned int m_writeBegin;
+	unsigned int m_writeEnd;
+
 };
 
 } //namespace mj
