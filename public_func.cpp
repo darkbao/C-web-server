@@ -39,14 +39,6 @@ void removeAndClose(int epollfd, int fd)
 	close(fd);
 }
 
-void modfd(int epollfd, int fd, int ev)
-{
-	epoll_event event;
-	event.data.fd = fd;
-	event.events  = ev | EPOLLET | EPOLLRDHUP;
-	epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
-}
-
 void addsig(int sig, void(handler)(int), bool restart)
 {
 	struct sigaction sa;
@@ -57,13 +49,6 @@ void addsig(int sig, void(handler)(int), bool restart)
 	}
 	sigfillset(&sa.sa_mask);
 	assert(sigaction(sig, &sa, NULL) != -1);
-}
-
-void send_error(int connfd, const char* info)
-{
-	printf("%s", info);
-	send(connfd, info, strlen(info), 0);
-	close(connfd);
 }
 
 }
